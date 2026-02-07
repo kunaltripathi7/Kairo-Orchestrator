@@ -1,1 +1,6 @@
 rootProject.name = 'kairo'
+
+include 'common'
+include 'api-service'
+include 'scheduler-service'
+include 'worker-service'
