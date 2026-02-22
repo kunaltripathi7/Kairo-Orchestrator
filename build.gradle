@@ -1,6 +1,6 @@
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.2.2' apply false
+    id 'org.springframework.boot' version '3.2.2' apply false // not appling to this project - sub modules can use it without specificying the version
     id 'io.spring.dependency-management' version '1.1.4' apply false
 }
 
@@ -22,7 +22,7 @@ subprojects {
     }
 
     dependencies {
-        testImplementation platform('org.junit:junit-bom:5.10.0')
+        testImplementation platform('org.junit:junit-bom:5.10.0') // packing it in 1 to all of them use the same versions.
         testImplementation 'org.junit.jupiter:junit-jupiter'
         testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     }
