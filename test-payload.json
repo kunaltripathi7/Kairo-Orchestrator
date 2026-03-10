@@ -1,0 +1,1 @@
+{"name": "test-workflow", "tasks": [{"handler": "validate-order", "payload": {"orderId": "123"}}]}

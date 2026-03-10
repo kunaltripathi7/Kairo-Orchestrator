@@ -1,7 +1,8 @@
 package dev.kunal.kairo.common.entity;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -9,10 +10,17 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
+import com.fasterxml.jackson.databind.JsonNode;
+
 @Getter
 @Setter
 @NoArgsConstructor
 @Entity
+@Builder
+@AllArgsConstructor
 @Table(name = "tasks")
 public class Task {
 
@@ -31,14 +39,20 @@ public class Task {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
+    @Builder.Default
     private TaskStatus status = TaskStatus.PENDING;
 
     @Column(nullable = false)
+    @Builder.Default
     private int attemptCount = 0;
 
-    @Column(columnDefinition = "jsonb") // jsonb parses it and stores in binary format in db and full indexing support
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb") // stores data in decomposed binary format - slower to write but faster to
+                                        // process supports indexing and doenst' need to be reparsed. copies the literal
+                                        // string to hibernate at create sql command
     private JsonNode payload;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
     private JsonNode result;
 
