@@ -15,6 +15,8 @@ import org.hibernate.type.SqlTypes;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import dev.kunal.kairo.common.enums.TaskStatus;
+
 @Getter
 @Setter
 @NoArgsConstructor

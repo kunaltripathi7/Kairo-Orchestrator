@@ -11,7 +11,7 @@ import dev.kunal.kairo.common.entity.OutboxEvent;
 
 @Repository
 public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> {
-    
+
     @Query(value = "SELECT * FROM outbox_events ORDER BY created_at ASC LIMIT 100 FOR UPDATE SKIP LOCKED", nativeQuery = true)
-    List<OutboxEvent> findTop100ByOrderByCreatedAtAscForUpdateSkipLocked();
+    List<OutboxEvent> findTop100ByOrderByCreatedAtAsc();
 }

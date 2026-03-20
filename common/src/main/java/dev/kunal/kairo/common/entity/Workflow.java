@@ -1,6 +1,8 @@
 package dev.kunal.kairo.common.entity;
 
 import com.fasterxml.jackson.databind.JsonNode;
+
+import dev.kunal.kairo.common.enums.WorkflowStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;

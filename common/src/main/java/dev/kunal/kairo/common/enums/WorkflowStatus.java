@@ -1,4 +1,4 @@
-package dev.kunal.kairo.common.entity;
+package dev.kunal.kairo.common.enums;
 
 public enum WorkflowStatus {
     PENDING,

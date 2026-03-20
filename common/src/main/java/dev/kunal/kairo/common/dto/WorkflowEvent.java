@@ -2,11 +2,12 @@ package dev.kunal.kairo.common.dto;
 
 import java.util.UUID;
 
-import lombok.Builder;
+import dev.kunal.kairo.common.enums.EventType;
+import dev.kunal.kairo.common.enums.WorkflowStatus;
 
-@Builder
 public record WorkflowEvent(
-        UUID workflowId,
-        String status,
-        String eventType
-) {}
+        UUID id,
+        WorkflowStatus status,
+        EventType type) {
+
+}
