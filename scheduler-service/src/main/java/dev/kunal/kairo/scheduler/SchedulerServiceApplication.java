@@ -1,15 +1,13 @@
-package dev.kunal.kairo.api;
+package dev.kunal.kairo.scheduler;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
-import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EntityScan(basePackages = "dev.kunal.kairo.common.entity")
-@EnableScheduling
-public class ApiServiceApplication {
+public class SchedulerServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(ApiServiceApplication.class, args);
+        SpringApplication.run(SchedulerServiceApplication.class, args);
     }
 }
