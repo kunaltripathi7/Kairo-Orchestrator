@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 
 import org.springframework.kafka.core.KafkaTemplate;
@@ -15,6 +16,7 @@ import dev.kunal.kairo.common.entity.OutboxEvent;
 import dev.kunal.kairo.common.enums.KafkaTopic;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Qualifier;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -24,13 +26,16 @@ public class OutboxPublisher {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final OutboxEventRepository outboxEventRepository;
+    @Qualifier("outboxExecutor")
+    private final ExecutorService outboxExecutorService;
 
     @Scheduled(fixedDelay = 1000)
     @Transactional
     public void pollOutbox() {
         List<OutboxEvent> outboxEvents = outboxEventRepository.findTop100ByOrderByCreatedAtAsc();
 
-        if (outboxEvents.isEmpty()) return;
+        if (outboxEvents.isEmpty())
+            return;
 
         List<CompletableFuture<UUID>> futures = outboxEvents.stream()
                 .map(event -> CompletableFuture.supplyAsync(() -> {
@@ -44,12 +49,13 @@ public class OutboxPublisher {
                         log.error("Failed to publish outbox event: {}", event.getId(), e);
                         return null;
                     }
-                }))
+                }, outboxExecutorService))
                 .collect(Collectors.toList());
 
+        // accepts varargs- array under the hood
         List<UUID> successfulIds = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                 .thenApply(v -> futures.stream()
-                        .map(CompletableFuture::join)
+                        .map(CompletableFuture::join) // returns UUIDs
                         .filter(Objects::nonNull)
                         .collect(Collectors.toList()))
                 .join();
