@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import dev.kunal.kairo.common.dto.WorkflowEvent;
+import dev.kunal.kairo.common.enums.KafkaTopic;
 import dev.kunal.kairo.scheduler.service.TaskSchedulingService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,7 +19,7 @@ public class WorkflowEventConsumer {
     private final TaskSchedulingService taskSchedulingService;
     private final ObjectMapper objectMapper;
 
-    @KafkaListener(topics = "workflow-events", groupId = "scheduler-group")
+    @KafkaListener(topics = KafkaTopic.Topics.WORKFLOW_EVENTS)
     public void onWorkflowEvent(String message) {
         try {
             WorkflowEvent event = objectMapper.readValue(message, WorkflowEvent.class);

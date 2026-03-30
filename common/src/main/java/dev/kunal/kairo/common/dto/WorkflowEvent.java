@@ -6,8 +6,7 @@ import dev.kunal.kairo.common.enums.EventType;
 import dev.kunal.kairo.common.enums.WorkflowStatus;
 
 public record WorkflowEvent(
-        UUID id,
-        WorkflowStatus status,
-        EventType type) {
-
+                UUID id,
+                WorkflowStatus status,
+                EventType type) {
 }
