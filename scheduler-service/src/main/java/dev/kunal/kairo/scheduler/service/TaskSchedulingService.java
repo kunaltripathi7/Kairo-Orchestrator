@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import dev.kunal.kairo.common.dto.TaskMessage;
 import dev.kunal.kairo.common.entity.Task;
 import dev.kunal.kairo.common.entity.Workflow;
 import dev.kunal.kairo.common.enums.KafkaTopic;
@@ -108,8 +109,7 @@ public class TaskSchedulingService {
                     task.getId(),
                     task.getWorkflowId(),
                     task.getHandlerName(),
-                    task.getPayload() != null ? task.getPayload().toString() : null
-            ));
+                    task.getPayload() != null ? task.getPayload().toString() : null));
             kafkaTemplate.send(KafkaTopic.TASK_QUEUE.getTopicName(), key, value);
             log.info("Published task {} to task-queue", task.getId());
         } catch (Exception e) {
@@ -117,6 +117,4 @@ public class TaskSchedulingService {
             throw new RuntimeException("Failed to publish task to queue", e);
         }
     }
-
-    public record TaskMessage(UUID taskId, UUID workflowId, String handlerName, String payload) {}
 }
