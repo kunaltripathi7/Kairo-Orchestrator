@@ -12,4 +12,6 @@ import dev.kunal.kairo.common.entity.Task;
 public interface TaskRepository extends JpaRepository<Task, UUID> {
 
     List<Task> findByWorkflowIdOrderBySequenceNumberAsc(UUID workflowId);
+
+    List<Task> findByStatusAndNextRetryTimeLessThanEqual(TaskStatus status, Instant time);
 }

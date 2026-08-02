@@ -63,6 +63,8 @@ public class Task {
 
     private Instant lockedUntil;
 
+    private Instant nextRetryTime;
+
     @Version
     private int version;
 

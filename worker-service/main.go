@@ -74,7 +74,11 @@ func main() {
 
 		result := processTask(registry, task)
 
-		resultBytes, _ := json.Marshal(result)
+		resultBytes, err := json.Marshal(result)
+		if err != nil {
+			log.Printf("Failed to marshal result for task %s: %v\n", task.TaskID, err)
+			continue
+		}
 		err = writer.WriteMessages(ctx, kafka.Message{
 			Key:   []byte(task.WorkflowID),
 			Value: resultBytes,

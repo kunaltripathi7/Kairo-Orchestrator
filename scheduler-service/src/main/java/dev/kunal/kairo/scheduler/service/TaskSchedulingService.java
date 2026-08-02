@@ -1,5 +1,6 @@
 package dev.kunal.kairo.scheduler.service;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -20,6 +21,7 @@ import dev.kunal.kairo.scheduler.repository.TaskRepository;
 import dev.kunal.kairo.scheduler.repository.WorkflowRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 @Slf4j
 @Service
@@ -30,6 +32,7 @@ public class TaskSchedulingService {
     private final TaskRepository taskRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
+    private final StringRedisTemplate redisTemplate;
 
     @Transactional
     public void scheduleFirstTask(UUID workflowId) {
@@ -97,12 +100,52 @@ public class TaskSchedulingService {
         Workflow workflow = workflowRepository.findById(failedTask.getWorkflowId())
                 .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + failedTask.getWorkflowId()));
 
-        workflow.setStatus(WorkflowStatus.FAILED);
-        workflowRepository.save(workflow);
-        log.info("Workflow {} marked as FAILED due to task {}", workflow.getId(), taskId);
+        if (failedTask.getAttemptCount() < workflow.getMaxRetries()) {
+            failedTask.setAttemptCount(failedTask.getAttemptCount() + 1);
+            failedTask.setStatus(TaskStatus.RETRY_PENDING);
+            
+            // Exponential backoff: 2^attemptCount seconds
+            long delaySeconds = (long) Math.pow(2, failedTask.getAttemptCount());
+            Instant nextRetry = Instant.now().plusSeconds(delaySeconds);
+            failedTask.setNextRetryTime(nextRetry);
+            
+            taskRepository.save(failedTask);
+            
+            try {
+                redisTemplate.opsForZSet().add("retry-queue", failedTask.getId().toString(), nextRetry.getEpochSecond());
+                log.info("Scheduled task {} for retry at {}", taskId, nextRetry);
+            } catch (Exception e) {
+                log.warn("Failed to add task {} to redis retry queue, will rely on postgres fallback", taskId, e);
+            }
+        } else {
+            failedTask.setStatus(TaskStatus.FAILED);
+            taskRepository.save(failedTask);
+            
+            publishTaskToDLQ(failedTask, "Max retries exhausted");
+
+            workflow.setStatus(WorkflowStatus.FAILED);
+            workflowRepository.save(workflow);
+            log.info("Workflow {} marked as FAILED due to task {}", workflow.getId(), taskId);
+        }
     }
 
-    private void publishTaskToQueue(Task task) {
+    public void publishTaskToDLQ(Task task, String reason) {
+        try {
+            String key = task.getWorkflowId().toString();
+            String value = objectMapper.writeValueAsString(new TaskMessage(
+                    task.getId(),
+                    task.getWorkflowId(),
+                    task.getHandlerName(),
+                    "Reason: " + reason + ", Payload: " + (task.getPayload() != null ? task.getPayload().toString() : null)
+            ));
+            kafkaTemplate.send(KafkaTopic.DEAD_LETTER_QUEUE.getTopicName(), key, value);
+            log.info("Published task {} to dead-letter-queue", task.getId());
+        } catch (Exception e) {
+            log.error("Failed to publish task {} to DLQ", task.getId(), e);
+        }
+    }
+
+    public void publishTaskToQueue(Task task) {
         try {
             String key = task.getWorkflowId().toString();
             String value = objectMapper.writeValueAsString(new TaskMessage(
