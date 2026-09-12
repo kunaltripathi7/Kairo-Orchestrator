@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/kunal/kairo-worker/handler"
 	"github.com/segmentio/kafka-go"
@@ -18,7 +20,15 @@ const (
 	taskQueueTopic  = "task-queue"
 	taskResultTopic = "task-results"
 	consumerGroup   = "worker-group"
+	dedupTTL        = 5 * time.Minute
 )
+
+type dedupEntry struct {
+	result    handler.TaskResult
+	timestamp time.Time
+}
+
+var processedTasks sync.Map // concurrent map in go
 
 func main() {
 	fmt.Println("Starting Kairo Worker Service (Go)...")
@@ -52,6 +62,9 @@ func main() {
 		cancel()
 	}()
 
+	// Periodically clean up old dedup entries
+	go cleanupDedupEntries(ctx)
+
 	fmt.Printf("Listening on topic: %s (group: %s)\n", taskQueueTopic, consumerGroup)
 
 	for {
@@ -72,7 +85,18 @@ func main() {
 
 		log.Printf("Received task: id=%s, handler=%s\n", task.TaskID, task.HandlerName)
 
-		result := processTask(registry, task)
+		var result handler.TaskResult
+
+		if entry, exists := processedTasks.Load(task.TaskID); exists {
+			log.Printf("Task %s already processed, skipping duplicate execution\n", task.TaskID)
+			result = entry.(dedupEntry).result
+		} else {
+			result = processTask(registry, task)
+			processedTasks.Store(task.TaskID, dedupEntry{
+				result:    result,
+				timestamp: time.Now(),
+			})
+		}
 
 		resultBytes, err := json.Marshal(result)
 		if err != nil {
@@ -93,6 +117,27 @@ func main() {
 	reader.Close()
 	writer.Close()
 	fmt.Println("Worker stopped.")
+}
+
+func cleanupDedupEntries(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			processedTasks.Range(func(key, value any) bool {
+				entry := value.(dedupEntry)
+				if now.Sub(entry.timestamp) > dedupTTL {
+					processedTasks.Delete(key)
+				}
+				return true
+			})
+		}
+	}
 }
 
 func processTask(registry *handler.Registry, task handler.TaskPayload) handler.TaskResult {

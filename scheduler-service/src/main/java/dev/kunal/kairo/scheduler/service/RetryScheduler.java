@@ -1,5 +1,6 @@
 package dev.kunal.kairo.scheduler.service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -13,19 +14,29 @@ import org.springframework.transaction.annotation.Transactional;
 import dev.kunal.kairo.common.entity.Task;
 import dev.kunal.kairo.common.enums.TaskStatus;
 import dev.kunal.kairo.scheduler.repository.TaskRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class RetryScheduler {
 
     private final StringRedisTemplate redisTemplate;
     private final TaskRepository taskRepository;
     private final TaskSchedulingService taskSchedulingService;
+    private final String nodeId;
 
     private static final String RETRY_QUEUE_KEY = "retry-queue";
+    private static final Duration LEASE_DURATION = Duration.ofSeconds(30);
+
+    public RetryScheduler(StringRedisTemplate redisTemplate,
+                          TaskRepository taskRepository,
+                          TaskSchedulingService taskSchedulingService) {
+        this.redisTemplate = redisTemplate;
+        this.taskRepository = taskRepository;
+        this.taskSchedulingService = taskSchedulingService;
+        this.nodeId = "scheduler-" + UUID.randomUUID().toString().substring(0, 8);
+        log.info("RetryScheduler initialized with nodeId: {}", nodeId);
+    }
 
     @Scheduled(fixedDelay = 1000)
     public void pollRedisForRetries() {
@@ -39,8 +50,10 @@ public class RetryScheduler {
         for (String taskIdStr : taskIds) {
             try {
                 UUID taskId = UUID.fromString(taskIdStr);
-                processRetry(taskId);
-                redisTemplate.opsForZSet().remove(RETRY_QUEUE_KEY, taskIdStr);
+                boolean claimed = claimAndRetryTask(taskId);
+                if (claimed) {
+                    redisTemplate.opsForZSet().remove(RETRY_QUEUE_KEY, taskIdStr);
+                }
             } catch (Exception e) {
                 log.error("Failed to process retry for task {}", taskIdStr, e);
             }
@@ -54,23 +67,44 @@ public class RetryScheduler {
                 
         for (Task task : pendingRetries) {
             try {
-                processRetry(task.getId());
+                claimAndRetryTask(task.getId());
             } catch (Exception e) {
                 log.error("Failed to process retry fallback for task {}", task.getId(), e);
             }
         }
     }
 
+    /**
+     * Atomically claims a RETRY_PENDING task and publishes it to the task queue.
+     * Returns true if this node successfully claimed the task, false if another node got it first.
+     */
     @Transactional
-    public void processRetry(UUID taskId) {
-        Task task = taskRepository.findById(taskId).orElse(null);
-        if (task == null || task.getStatus() != TaskStatus.RETRY_PENDING) {
-            return; // Task already processed or not found
+    public boolean claimAndRetryTask(UUID taskId) {
+        Instant now = Instant.now();
+        Instant leaseUntil = now.plus(LEASE_DURATION);
+
+        int claimed = taskRepository.claimTask(
+                taskId,
+                TaskStatus.RETRY_PENDING,
+                TaskStatus.SCHEDULED,
+                nodeId,
+                leaseUntil,
+                now);
+
+        if (claimed == 0) {
+            log.debug("Task {} already claimed by another node, skipping", taskId);
+            return false;
         }
 
-        task.setStatus(TaskStatus.SCHEDULED);
-        taskRepository.save(task);
+        Task task = taskRepository.findById(taskId).orElse(null);
+        if (task == null) {
+            log.warn("Task {} disappeared after claiming, skipping", taskId);
+            return false;
+        }
+
         taskSchedulingService.publishTaskToQueue(task);
-        log.info("Successfully re-enqueued task {} for retry", taskId);
+        log.info("Successfully claimed and re-enqueued task {} for retry (node={})", taskId, nodeId);
+        return true;
     }
 }
+

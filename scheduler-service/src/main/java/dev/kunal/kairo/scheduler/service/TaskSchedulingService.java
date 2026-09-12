@@ -1,5 +1,6 @@
 package dev.kunal.kairo.scheduler.service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -19,13 +20,11 @@ import dev.kunal.kairo.common.enums.WorkflowStatus;
 import dev.kunal.kairo.common.exception.ResourceNotFoundException;
 import dev.kunal.kairo.scheduler.repository.TaskRepository;
 import dev.kunal.kairo.scheduler.repository.WorkflowRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class TaskSchedulingService {
 
     private final WorkflowRepository workflowRepository;
@@ -33,6 +32,23 @@ public class TaskSchedulingService {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
     private final StringRedisTemplate redisTemplate;
+    private final String nodeId;
+
+    private static final Duration LEASE_DURATION = Duration.ofSeconds(30);
+
+    public TaskSchedulingService(WorkflowRepository workflowRepository,
+                                 TaskRepository taskRepository,
+                                 KafkaTemplate<String, String> kafkaTemplate,
+                                 ObjectMapper objectMapper,
+                                 StringRedisTemplate redisTemplate) {
+        this.workflowRepository = workflowRepository;
+        this.taskRepository = taskRepository;
+        this.kafkaTemplate = kafkaTemplate;
+        this.objectMapper = objectMapper;
+        this.redisTemplate = redisTemplate;
+        this.nodeId = "scheduler-" + UUID.randomUUID().toString().substring(0, 8);
+        log.info("TaskSchedulingService initialized with nodeId: {}", nodeId);
+    }
 
     @Transactional
     public void scheduleFirstTask(UUID workflowId) {
@@ -54,21 +70,40 @@ public class TaskSchedulingService {
         }
 
         Task firstTask = tasks.get(0);
-        firstTask.setStatus(TaskStatus.SCHEDULED);
-        taskRepository.save(firstTask);
+        Instant now = Instant.now();
+        int claimed = taskRepository.claimTask(
+                firstTask.getId(),
+                TaskStatus.PENDING,
+                TaskStatus.SCHEDULED,
+                nodeId,
+                now.plus(LEASE_DURATION),
+                now);
+
+        if (claimed == 0) {
+            log.warn("First task {} for workflow {} already claimed by another node", firstTask.getId(), workflowId);
+            return;
+        }
 
         workflow.setStatus(WorkflowStatus.IN_PROGRESS);
         workflowRepository.save(workflow);
 
         publishTaskToQueue(firstTask);
 
-        log.info("Scheduled first task {} for workflow {}", firstTask.getId(), workflowId);
+        log.info("Scheduled first task {} for workflow {} (node={})", firstTask.getId(), workflowId, nodeId);
     }
 
     @Transactional
     public void onTaskCompleted(UUID taskId) {
         Task completedTask = taskRepository.findById(taskId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task not found: " + taskId));
+
+        if (completedTask.getStatus() != TaskStatus.SCHEDULED) {
+            log.warn("Task {} already processed (status={}), skipping duplicate result", taskId, completedTask.getStatus());
+            return;
+        }
+
+        completedTask.setStatus(TaskStatus.COMPLETED);
+        taskRepository.releaseLock(taskId);
 
         UUID workflowId = completedTask.getWorkflowId();
         List<Task> allTasks = taskRepository.findByWorkflowIdOrderBySequenceNumberAsc(workflowId);
@@ -79,10 +114,22 @@ public class TaskSchedulingService {
                 .orElse(null);
 
         if (nextTask != null) {
-            nextTask.setStatus(TaskStatus.SCHEDULED);
-            taskRepository.save(nextTask);
+            Instant now = Instant.now();
+            int claimed = taskRepository.claimTask(
+                    nextTask.getId(),
+                    TaskStatus.PENDING,
+                    TaskStatus.SCHEDULED,
+                    nodeId,
+                    now.plus(LEASE_DURATION),
+                    now);
+
+            if (claimed == 0) {
+                log.warn("Next task {} already claimed by another node, skipping", nextTask.getId());
+                return;
+            }
+
             publishTaskToQueue(nextTask);
-            log.info("Scheduled next task {} for workflow {}", nextTask.getId(), workflowId);
+            log.info("Scheduled next task {} for workflow {} (node={})", nextTask.getId(), workflowId, nodeId);
         } else {
             Workflow workflow = workflowRepository.findById(workflowId)
                     .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + workflowId));
@@ -96,6 +143,13 @@ public class TaskSchedulingService {
     public void onTaskFailed(UUID taskId) {
         Task failedTask = taskRepository.findById(taskId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task not found: " + taskId));
+
+        if (failedTask.getStatus() != TaskStatus.SCHEDULED) {
+            log.warn("Task {} already processed (status={}), skipping duplicate result", taskId, failedTask.getStatus());
+            return;
+        }
+
+        taskRepository.releaseLock(taskId);
 
         Workflow workflow = workflowRepository.findById(failedTask.getWorkflowId())
                 .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + failedTask.getWorkflowId()));
@@ -161,3 +215,4 @@ public class TaskSchedulingService {
         }
     }
 }
+
