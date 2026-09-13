@@ -1,0 +1,11 @@
+groups:
+  - name: kairo-dlq-alerts
+    rules:
+      - alert: TaskSentToDLQ
+        expr: increase(kairo_dlq_tasks_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Task sent to Dead Letter Queue"
+          description: "{{ $value }} task(s) hit the DLQ in the last 5 minutes"
