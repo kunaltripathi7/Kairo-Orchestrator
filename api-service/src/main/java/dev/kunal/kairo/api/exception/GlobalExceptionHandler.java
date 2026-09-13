@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import dev.kunal.kairo.common.dto.ErrorResponse;
 import dev.kunal.kairo.common.dto.ValidationErrorResponse;
@@ -67,9 +68,9 @@ public class GlobalExceptionHandler {
                 return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
         }
 
-        @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+        @ExceptionHandler(MethodArgumentTypeMismatchException.class)
         public ResponseEntity<ErrorResponse> handleTypeMismatch(
-                        org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex,
+                        MethodArgumentTypeMismatchException ex,
                         HttpServletRequest request) {
                 String message = "Invalid parameter: " + ex.getName();
                 ErrorResponse errorResponse = buildErrorResponse(message, ErrorCode.VALIDATION_FAILED,

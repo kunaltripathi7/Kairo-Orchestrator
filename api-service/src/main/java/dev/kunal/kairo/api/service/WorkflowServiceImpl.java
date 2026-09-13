@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -56,10 +57,13 @@ public class WorkflowServiceImpl implements WorkflowService {
 
                 List<Task> savedTasks = taskRepository.saveAll(tasks);
 
+                String correlationId = MDC.get("correlationId");
+                
                 WorkflowEvent workflowEvent = new WorkflowEvent(
                                 savedWorkflow.getId(),
                                 savedWorkflow.getStatus(),
-                                EventType.WORKFLOW_CREATED);
+                                EventType.WORKFLOW_CREATED,
+                                correlationId);
 
                 OutboxEvent outboxEvent = OutboxEvent.builder()
                                 .aggregateType(AggregateType.WORKFLOW)

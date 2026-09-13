@@ -8,5 +8,6 @@ import dev.kunal.kairo.common.enums.WorkflowStatus;
 public record WorkflowEvent(
                 UUID id,
                 WorkflowStatus status,
-                EventType type) {
+                EventType type,
+                String correlationId) {
 }

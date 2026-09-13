@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -31,7 +31,10 @@ type dedupEntry struct {
 var processedTasks sync.Map // concurrent map in go
 
 func main() {
-	fmt.Println("Starting Kairo Worker Service (Go)...")
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)) // setting it to output json
+	slog.SetDefault(logger)
+
+	slog.Info("Starting Kairo Worker Service (Go)...")
 
 	registry := handler.NewRegistry()
 
@@ -65,7 +68,7 @@ func main() {
 	// Periodically clean up old dedup entries
 	go cleanupDedupEntries(ctx)
 
-	fmt.Printf("Listening on topic: %s (group: %s)\n", taskQueueTopic, consumerGroup)
+	slog.Info(fmt.Sprintf("Listening on topic: %s (group: %s)", taskQueueTopic, consumerGroup))
 
 	for {
 		msg, err := reader.ReadMessage(ctx)
@@ -73,22 +76,23 @@ func main() {
 			if ctx.Err() != nil {
 				break // context cancelled, shutting down
 			}
-			log.Printf("Error reading message: %v\n", err)
+			slog.Error("Error reading message", "error", err)
 			continue
 		}
 
 		var task handler.TaskPayload
 		if err := json.Unmarshal(msg.Value, &task); err != nil {
-			log.Printf("Failed to unmarshal task: %v\n", err)
+			slog.Error("Failed to unmarshal task", "error", err)
 			continue
 		}
 
-		log.Printf("Received task: id=%s, handler=%s\n", task.TaskID, task.HandlerName)
+		logger := slog.With("correlationId", task.CorrelationID, "taskId", task.TaskID, "workflowId", task.WorkflowID)
+		logger.Info("Received task", "handler", task.HandlerName)
 
 		var result handler.TaskResult
 
 		if entry, exists := processedTasks.Load(task.TaskID); exists {
-			log.Printf("Task %s already processed, skipping duplicate execution\n", task.TaskID)
+			logger.Warn("Task already processed, skipping duplicate execution")
 			result = entry.(dedupEntry).result
 		} else {
 			result = processTask(registry, task)
@@ -100,7 +104,7 @@ func main() {
 
 		resultBytes, err := json.Marshal(result)
 		if err != nil {
-			log.Printf("Failed to marshal result for task %s: %v\n", task.TaskID, err)
+			logger.Error("Failed to marshal result", "error", err)
 			continue
 		}
 		err = writer.WriteMessages(ctx, kafka.Message{
@@ -108,15 +112,15 @@ func main() {
 			Value: resultBytes,
 		})
 		if err != nil {
-			log.Printf("Failed to publish result for task %s: %v\n", task.TaskID, err)
+			logger.Error("Failed to publish result", "error", err)
 		} else {
-			log.Printf("Published result for task %s: status=%s\n", task.TaskID, result.Status)
+			logger.Info("Published result", "status", result.Status)
 		}
 	}
 
 	reader.Close()
 	writer.Close()
-	fmt.Println("Worker stopped.")
+	slog.Info("Worker stopped.")
 }
 
 func cleanupDedupEntries(ctx context.Context) {
@@ -144,24 +148,27 @@ func processTask(registry *handler.Registry, task handler.TaskPayload) handler.T
 	h, err := registry.Get(task.HandlerName)
 	if err != nil {
 		return handler.TaskResult{
-			TaskID:  task.TaskID,
-			Status:  "FAILED",
-			Message: fmt.Sprintf("Handler not found: %s", task.HandlerName),
+			TaskID:        task.TaskID,
+			Status:        "FAILED",
+			Message:       fmt.Sprintf("Handler not found: %s", task.HandlerName),
+			CorrelationID: task.CorrelationID,
 		}
 	}
 
 	output, err := h.Execute(task.Payload)
 	if err != nil {
 		return handler.TaskResult{
-			TaskID:  task.TaskID,
-			Status:  "FAILED",
-			Message: err.Error(),
+			TaskID:        task.TaskID,
+			Status:        "FAILED",
+			Message:       err.Error(),
+			CorrelationID: task.CorrelationID,
 		}
 	}
 
 	return handler.TaskResult{
-		TaskID:  task.TaskID,
-		Status:  "COMPLETED",
-		Message: output,
+		TaskID:        task.TaskID,
+		Status:        "COMPLETED",
+		Message:       output,
+		CorrelationID: task.CorrelationID,
 	}
 }

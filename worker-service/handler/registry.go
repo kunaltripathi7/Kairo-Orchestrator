@@ -5,14 +5,16 @@ import "fmt"
 type TaskPayload struct {
 	TaskID      string `json:"taskId"`
 	WorkflowID  string `json:"workflowId"`
-	HandlerName string `json:"handlerName"`
-	Payload     string `json:"payload"`
+	HandlerName   string `json:"handlerName"`
+	Payload       string `json:"payload"`
+	CorrelationID string `json:"correlationId"`
 }
 
 type TaskResult struct {
 	TaskID  string `json:"taskId"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Status        string `json:"status"`
+	Message       string `json:"message"`
+	CorrelationID string `json:"correlationId"`
 }
 
 type Handler interface {

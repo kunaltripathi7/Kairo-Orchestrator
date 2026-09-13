@@ -1,12 +1,16 @@
 package dev.kunal.kairo.api.publisher;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -16,7 +20,6 @@ import dev.kunal.kairo.common.entity.OutboxEvent;
 import dev.kunal.kairo.common.enums.KafkaTopic;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Qualifier;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -27,7 +30,7 @@ public class OutboxPublisher {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final OutboxEventRepository outboxEventRepository;
     @Qualifier("outboxExecutor")
-    private final ExecutorService outboxExecutorService;
+    private final Executor outboxExecutorService;
 
     @Scheduled(fixedDelay = 1000)
     @Transactional
@@ -42,12 +45,24 @@ public class OutboxPublisher {
                     String topic = KafkaTopic.WORKFLOW_EVENTS.getTopicName();
                     String key = event.getAggregateId().toString();
                     String value = event.getPayload().toString();
+                    
+                    ProducerRecord<String, String> record = 
+                            new ProducerRecord<>(topic, key, value);
+                            
+                    if (event.getPayload().has("correlationId") && !event.getPayload().get("correlationId").isNull()) {
+                        String correlationId = event.getPayload().get("correlationId").asText();
+                        record.headers().add("X-Correlation-Id", correlationId.getBytes(StandardCharsets.UTF_8));
+                        MDC.put("correlationId", correlationId);
+                    }
+                    
                     try {
-                        kafkaTemplate.send(topic, key, value).get();
+                        kafkaTemplate.send(record).get();
                         return event.getId();
                     } catch (Exception e) {
                         log.error("Failed to publish outbox event: {}", event.getId(), e);
                         return null;
+                    } finally {
+                        MDC.remove("correlationId");
                     }
                 }, outboxExecutorService))
                 .collect(Collectors.toList());

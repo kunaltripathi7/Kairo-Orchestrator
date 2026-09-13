@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import org.slf4j.MDC;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -190,7 +191,8 @@ public class TaskSchedulingService {
                     task.getId(),
                     task.getWorkflowId(),
                     task.getHandlerName(),
-                    "Reason: " + reason + ", Payload: " + (task.getPayload() != null ? task.getPayload().toString() : null)
+                    "Reason: " + reason + ", Payload: " + (task.getPayload() != null ? task.getPayload().toString() : null),
+                    MDC.get("correlationId")
             ));
             kafkaTemplate.send(KafkaTopic.DEAD_LETTER_QUEUE.getTopicName(), key, value);
             log.info("Published task {} to dead-letter-queue", task.getId());
@@ -206,7 +208,8 @@ public class TaskSchedulingService {
                     task.getId(),
                     task.getWorkflowId(),
                     task.getHandlerName(),
-                    task.getPayload() != null ? task.getPayload().toString() : null));
+                    task.getPayload() != null ? task.getPayload().toString() : null,
+                    MDC.get("correlationId")));
             kafkaTemplate.send(KafkaTopic.TASK_QUEUE.getTopicName(), key, value);
             log.info("Published task {} to task-queue", task.getId());
         } catch (Exception e) {
