@@ -2,8 +2,12 @@ package dev.kunal.kairo.scheduler.service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.slf4j.MDC;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -61,36 +65,28 @@ public class TaskSchedulingService {
             return;
         }
 
-        List<Task> tasks = taskRepository.findByWorkflowIdOrderBySequenceNumberAsc(workflowId);
+        List<Task> allTasks = taskRepository.findByWorkflowId(workflowId);
 
-        if (tasks.isEmpty()) {
+        if (allTasks.isEmpty()) {
             log.warn("Workflow {} has no tasks, marking as COMPLETED", workflowId);
             workflow.setStatus(WorkflowStatus.COMPLETED);
             workflowRepository.save(workflow);
             return;
         }
 
-        Task firstTask = tasks.get(0);
-        Instant now = Instant.now();
-        int claimed = taskRepository.claimTask(
-                firstTask.getId(),
-                TaskStatus.PENDING,
-                TaskStatus.SCHEDULED,
-                nodeId,
-                now.plus(LEASE_DURATION),
-                now);
-
-        if (claimed == 0) {
-            log.warn("First task {} for workflow {} already claimed by another node", firstTask.getId(), workflowId);
-            return;
-        }
-
         workflow.setStatus(WorkflowStatus.IN_PROGRESS);
         workflowRepository.save(workflow);
 
-        publishTaskToQueue(firstTask);
+        // Schedule all root tasks (no dependencies)
+        List<Task> rootTasks = allTasks.stream()
+                .filter(t -> t.getDependsOn() == null || t.getDependsOn().isEmpty())
+                .toList();
 
-        log.info("Scheduled first task {} for workflow {} (node={})", firstTask.getId(), workflowId, nodeId);
+        for (Task rootTask : rootTasks) {
+            claimAndPublish(rootTask);
+        }
+
+        log.info("Scheduled {} root task(s) for workflow {} (node={})", rootTasks.size(), workflowId, nodeId);
     }
 
     @Transactional
@@ -107,31 +103,38 @@ public class TaskSchedulingService {
         taskRepository.releaseLock(taskId);
 
         UUID workflowId = completedTask.getWorkflowId();
-        List<Task> allTasks = taskRepository.findByWorkflowIdOrderBySequenceNumberAsc(workflowId);
+        List<Task> allTasks = taskRepository.findByWorkflowId(workflowId);
 
-        Task nextTask = allTasks.stream()
+        // Find completed task IDs for dependency checking
+        Set<UUID> completedIds = allTasks.stream()
+                .filter(t -> t.getStatus() == TaskStatus.COMPLETED)
+                .map(Task::getId)
+                .collect(Collectors.toSet());
+
+        // Find PENDING tasks whose dependencies are now all satisfied
+        List<Task> readyTasks = allTasks.stream()
                 .filter(t -> t.getStatus() == TaskStatus.PENDING)
-                .findFirst()
-                .orElse(null);
+                .filter(t -> t.getDependsOn() != null && !t.getDependsOn().isEmpty())
+                .filter(t -> completedIds.containsAll(t.getDependsOn()))
+                .toList();
 
-        if (nextTask != null) {
-            Instant now = Instant.now();
-            int claimed = taskRepository.claimTask(
-                    nextTask.getId(),
-                    TaskStatus.PENDING,
-                    TaskStatus.SCHEDULED,
-                    nodeId,
-                    now.plus(LEASE_DURATION),
-                    now);
+        for (Task readyTask : readyTasks) {
+            claimAndPublish(readyTask);
+        }
 
-            if (claimed == 0) {
-                log.warn("Next task {} already claimed by another node, skipping", nextTask.getId());
-                return;
-            }
+        if (!readyTasks.isEmpty()) {
+            log.info("Scheduled {} newly unblocked task(s) for workflow {} (node={})",
+                    readyTasks.size(), workflowId, nodeId);
+        }
 
-            publishTaskToQueue(nextTask);
-            log.info("Scheduled next task {} for workflow {} (node={})", nextTask.getId(), workflowId, nodeId);
-        } else {
+        // Check if workflow is done: no PENDING, SCHEDULED, RUNNING, or RETRY_PENDING tasks remain
+        boolean workflowDone = allTasks.stream()
+                .noneMatch(t -> t.getStatus() == TaskStatus.PENDING
+                        || t.getStatus() == TaskStatus.SCHEDULED
+                        || t.getStatus() == TaskStatus.RUNNING
+                        || t.getStatus() == TaskStatus.RETRY_PENDING);
+
+        if (workflowDone) {
             Workflow workflow = workflowRepository.findById(workflowId)
                     .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + workflowId));
             workflow.setStatus(WorkflowStatus.COMPLETED);
@@ -158,14 +161,13 @@ public class TaskSchedulingService {
         if (failedTask.getAttemptCount() < workflow.getMaxRetries()) {
             failedTask.setAttemptCount(failedTask.getAttemptCount() + 1);
             failedTask.setStatus(TaskStatus.RETRY_PENDING);
-            
-            // Exponential backoff: 2^attemptCount seconds
+
             long delaySeconds = (long) Math.pow(2, failedTask.getAttemptCount());
             Instant nextRetry = Instant.now().plusSeconds(delaySeconds);
             failedTask.setNextRetryTime(nextRetry);
-            
+
             taskRepository.save(failedTask);
-            
+
             try {
                 redisTemplate.opsForZSet().add("retry-queue", failedTask.getId().toString(), nextRetry.getEpochSecond());
                 log.info("Scheduled task {} for retry at {}", taskId, nextRetry);
@@ -175,13 +177,59 @@ public class TaskSchedulingService {
         } else {
             failedTask.setStatus(TaskStatus.FAILED);
             taskRepository.save(failedTask);
-            
+
             publishTaskToDLQ(failedTask, "Max retries exhausted");
+
+            // Skip all downstream dependents
+            skipDownstreamTasks(failedTask, taskRepository.findByWorkflowId(workflow.getId()));
 
             workflow.setStatus(WorkflowStatus.FAILED);
             workflowRepository.save(workflow);
             log.info("Workflow {} marked as FAILED due to task {}", workflow.getId(), taskId);
         }
+    }
+
+    // making downstreams task invalid if parent task fails.
+    private void skipDownstreamTasks(Task failedTask, List<Task> allTasks) {
+        Queue<UUID> toSkip = new LinkedList<>();
+        toSkip.add(failedTask.getId());
+        List<Task> tasksToSave = new LinkedList<>();
+
+        while (!toSkip.isEmpty()) {
+            UUID currentId = toSkip.poll();
+            for (Task task : allTasks) {
+                if (task.getStatus() == TaskStatus.PENDING
+                        && task.getDependsOn() != null
+                        && task.getDependsOn().contains(currentId)) {
+                    task.setStatus(TaskStatus.SKIPPED);
+                    tasksToSave.add(task);
+                    toSkip.add(task.getId());
+                    log.info("Skipped downstream task {} (depends on failed task {})", task.getId(), failedTask.getId());
+                }
+            }
+        }
+
+        if (!tasksToSave.isEmpty()) {
+            taskRepository.saveAll(tasksToSave);
+        }
+    }
+
+    private void claimAndPublish(Task task) {
+        Instant now = Instant.now();
+        int claimed = taskRepository.claimTask(
+                task.getId(),
+                TaskStatus.PENDING,
+                TaskStatus.SCHEDULED,
+                nodeId,
+                now.plus(LEASE_DURATION),
+                now);
+
+        if (claimed == 0) {
+            log.warn("Task {} already claimed by another node, skipping", task.getId());
+            return;
+        }
+
+        publishTaskToQueue(task);
     }
 
     public void publishTaskToDLQ(Task task, String reason) {
@@ -218,4 +266,3 @@ public class TaskSchedulingService {
         }
     }
 }
-

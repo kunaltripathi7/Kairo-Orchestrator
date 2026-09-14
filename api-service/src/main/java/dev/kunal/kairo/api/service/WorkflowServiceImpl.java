@@ -1,8 +1,11 @@
 package dev.kunal.kairo.api.service;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
@@ -14,6 +17,7 @@ import dev.kunal.kairo.api.mapper.WorkflowMapper;
 import dev.kunal.kairo.api.repository.OutboxEventRepository;
 import dev.kunal.kairo.api.repository.TaskRepository;
 import dev.kunal.kairo.api.repository.WorkflowRepository;
+import dev.kunal.kairo.api.validation.DagValidator;
 import dev.kunal.kairo.common.dto.WorkflowEvent;
 import dev.kunal.kairo.common.entity.OutboxEvent;
 import dev.kunal.kairo.common.entity.Task;
@@ -37,6 +41,9 @@ public class WorkflowServiceImpl implements WorkflowService {
         @Override
         @Transactional
         public WorkflowResponse createWorkflow(WorkflowRequest request) {
+                // Validate DAG structure
+                DagValidator.validate(request.tasks());
+
                 Workflow workflow = Workflow.builder()
                                 .name(request.name())
                                 .maxRetries(request.maxRetries())
@@ -45,20 +52,47 @@ public class WorkflowServiceImpl implements WorkflowService {
 
                 Workflow savedWorkflow = workflowRepository.save(workflow);
 
-                AtomicInteger sequence = new AtomicInteger(1);
-                List<Task> tasks = request.tasks().stream()
-                                .map(taskReq -> Task.builder()
-                                                .workflowId(savedWorkflow.getId())
-                                                .sequenceNumber(sequence.getAndIncrement())
-                                                .handlerName(taskReq.handler())
-                                                .payload(taskReq.payload())
-                                                .build())
-                                .toList();
+                // Compute topological order for display sequencing
+                List<String> topoOrder = DagValidator.topologicalOrder(request.tasks());
+                Map<String, Integer> sequenceMap = new HashMap<>();
+                for (int i = 0; i < topoOrder.size(); i++) {
+                        sequenceMap.put(topoOrder.get(i), i + 1);
+                }
 
-                List<Task> savedTasks = taskRepository.saveAll(tasks);
+                // First pass: save tasks without dependsOn resolved (generates UUIDs)
+                Map<String, UUID> nameToId = new HashMap<>();
+                List<Task> savedTasks = new ArrayList<>();
+
+                for (var taskReq : request.tasks()) {
+                        Task task = Task.builder()
+                                        .workflowId(savedWorkflow.getId())
+                                        .name(taskReq.name())
+                                        .sequenceNumber(sequenceMap.get(taskReq.name()))
+                                        .handlerName(taskReq.handler())
+                                        .payload(taskReq.payload())
+                                        .dependsOn(new ArrayList<>())
+                                        .build();
+
+                        Task saved = taskRepository.save(task);
+                        savedTasks.add(saved);
+                        nameToId.put(taskReq.name(), saved.getId());
+                }
+
+                // Second pass: resolve dependsOn names → UUIDs
+                for (int i = 0; i < request.tasks().size(); i++) {
+                        var taskReq = request.tasks().get(i);
+                        List<String> deps = taskReq.dependsOn();
+                        if (deps != null && !deps.isEmpty()) {
+                                List<UUID> resolvedDeps = deps.stream()
+                                                .map(nameToId::get)
+                                                .toList();
+                                savedTasks.get(i).setDependsOn(resolvedDeps);
+                                taskRepository.save(savedTasks.get(i));
+                        }
+                }
 
                 String correlationId = MDC.get("correlationId");
-                
+
                 WorkflowEvent workflowEvent = new WorkflowEvent(
                                 savedWorkflow.getId(),
                                 savedWorkflow.getStatus(),
@@ -69,7 +103,7 @@ public class WorkflowServiceImpl implements WorkflowService {
                                 .aggregateType(AggregateType.WORKFLOW)
                                 .aggregateId(savedWorkflow.getId())
                                 .type(EventType.WORKFLOW_CREATED)
-                                .payload(objectMapper.valueToTree(workflowEvent)) // gives json obj
+                                .payload(objectMapper.valueToTree(workflowEvent))
                                 .build();
 
                 outboxEventRepository.save(outboxEvent);

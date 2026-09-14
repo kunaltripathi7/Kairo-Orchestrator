@@ -18,6 +18,8 @@ public interface TaskRepository extends JpaRepository<Task, UUID> {
 
     List<Task> findByWorkflowIdOrderBySequenceNumberAsc(UUID workflowId);
 
+    List<Task> findByWorkflowId(UUID workflowId);
+
     List<Task> findByStatusAndNextRetryTimeLessThanEqual(TaskStatus status, Instant time);
 
     /**

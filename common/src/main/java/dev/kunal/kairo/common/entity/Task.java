@@ -1,6 +1,8 @@
 package dev.kunal.kairo.common.entity;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import org.hibernate.annotations.JdbcTypeCode;
@@ -42,11 +44,19 @@ public class Task {
     @Column(name = "workflow_id", nullable = false)
     private UUID workflowId;
 
+    @Column(nullable = false, length = 100)
+    private String name;
+
     @Column(nullable = false)
     private int sequenceNumber;
 
     @Column(nullable = false, length = 100)
     private String handlerName;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb")
+    @Builder.Default
+    private List<UUID> dependsOn = new ArrayList<>();
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
