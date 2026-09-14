@@ -1,5 +1,19 @@
 package dev.kunal.kairo.api.filter;
 
+/* 
+ * ---------------------------------------------------------
+ * LEARNING REFERENCE: Manual Correlation ID Filter
+ * ---------------------------------------------------------
+ * This class was previously used to manually generate and 
+ * inject a correlation ID into the MDC for log tracing.
+ * 
+ * It has been disabled because we now use Micrometer Tracing 
+ * (OpenTelemetry) which automatically intercepts HTTP requests 
+ * and injects traceId/spanId into MDC and Kafka headers.
+ * 
+ * Keeping this here for reference on how manual MDC tracing 
+ * works in a standard Spring Boot application.
+ * 
 import java.io.IOException;
 import java.util.UUID;
 
@@ -12,7 +26,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
-@Component
+//@Component
 public class CorrelationIdFilter extends OncePerRequestFilter {
 
     private static final String CORRELATION_ID_HEADER_NAME = "X-Correlation-Id";
@@ -38,3 +52,4 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
         }
     }
 }
+*/

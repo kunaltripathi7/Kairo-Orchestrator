@@ -239,8 +239,8 @@ public class TaskSchedulingService {
                     task.getId(),
                     task.getWorkflowId(),
                     task.getHandlerName(),
-                    "Reason: " + reason + ", Payload: " + (task.getPayload() != null ? task.getPayload().toString() : null),
-                    MDC.get("correlationId")
+                    "Reason: " + reason + ", Payload: " + (task.getPayload() != null ? task.getPayload().toString() : null)
+                    // MDC.get("correlationId") // Handled automatically by Micrometer Tracing
             ));
             kafkaTemplate.send(KafkaTopic.DEAD_LETTER_QUEUE.getTopicName(), key, value);
             log.info("Published task {} to dead-letter-queue", task.getId());
@@ -256,8 +256,9 @@ public class TaskSchedulingService {
                     task.getId(),
                     task.getWorkflowId(),
                     task.getHandlerName(),
-                    task.getPayload() != null ? task.getPayload().toString() : null,
-                    MDC.get("correlationId")));
+                    task.getPayload() != null ? task.getPayload().toString() : null
+                    // MDC.get("correlationId") // Handled automatically by Micrometer Tracing
+            ));
             kafkaTemplate.send(KafkaTopic.TASK_QUEUE.getTopicName(), key, value);
             log.info("Published task {} to task-queue", task.getId());
         } catch (Exception e) {

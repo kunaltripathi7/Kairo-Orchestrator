@@ -1,8 +1,6 @@
 package dev.kunal.kairo.scheduler.consumer;
 
-import java.util.UUID;
 
-import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
@@ -28,13 +26,18 @@ public class TaskResultConsumer {
             // JsonNode result = objectMapper.readTree(message); // navigate like a tree
             // (structure is unknown/dynamic)
             TaskResultEvent event = objectMapper.readValue(message, TaskResultEvent.class);
-            
-            if (event.correlationId() != null) {
-                MDC.put("correlationId", event.correlationId());
-            } else {
-                MDC.put("correlationId", UUID.randomUUID().toString());
-            }
-            
+
+            /* 
+             * LEARNING REFERENCE: Manual MDC Correlation
+             * Replaced by Micrometer Tracing auto-injecting traceId from Kafka headers.
+             *
+             * if (event.correlationId() != null) {
+             *     MDC.put("correlationId", event.correlationId());
+             * } else {
+             *     MDC.put("correlationId", UUID.randomUUID().toString());
+             * }
+             */
+
             log.info("Received task result: taskId={}, status={}", event.taskId(), event.status());
 
             switch (event.status()) {
@@ -44,8 +47,8 @@ public class TaskResultConsumer {
             }
         } catch (Exception e) {
             log.error("Failed to process task result: {}", message, e);
-        } finally {
+        } /* finally {
             MDC.remove("correlationId");
-        }
+        } */
     }
 }

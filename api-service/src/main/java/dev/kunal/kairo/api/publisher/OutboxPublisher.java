@@ -18,7 +18,6 @@ import org.springframework.stereotype.Component;
 import dev.kunal.kairo.api.repository.OutboxEventRepository;
 import dev.kunal.kairo.common.entity.OutboxEvent;
 import dev.kunal.kairo.common.enums.KafkaTopic;
-import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -33,7 +32,6 @@ public class OutboxPublisher {
     private final Executor outboxExecutorService;
 
     @Scheduled(fixedDelay = 1000)
-    @Transactional
     public void pollOutbox() {
         List<OutboxEvent> outboxEvents = outboxEventRepository.findTop100ByOrderByCreatedAtAsc();
 
@@ -47,22 +45,13 @@ public class OutboxPublisher {
                     String value = event.getPayload().toString();
                     
                     ProducerRecord<String, String> record = 
-                            new ProducerRecord<>(topic, key, value);
-                            
-                    if (event.getPayload().has("correlationId") && !event.getPayload().get("correlationId").isNull()) {
-                        String correlationId = event.getPayload().get("correlationId").asText();
-                        record.headers().add("X-Correlation-Id", correlationId.getBytes(StandardCharsets.UTF_8));
-                        MDC.put("correlationId", correlationId);
-                    }
-                    
+                            new ProducerRecord<>(topic, key, value);                   
                     try {
                         kafkaTemplate.send(record).get();
                         return event.getId();
                     } catch (Exception e) {
                         log.error("Failed to publish outbox event: {}", event.getId(), e);
                         return null;
-                    } finally {
-                        MDC.remove("correlationId");
                     }
                 }, outboxExecutorService))
                 .collect(Collectors.toList());

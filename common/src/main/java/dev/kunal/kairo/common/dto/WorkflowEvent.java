@@ -8,6 +8,7 @@ import dev.kunal.kairo.common.enums.WorkflowStatus;
 public record WorkflowEvent(
                 UUID id,
                 WorkflowStatus status,
-                EventType type,
-                String correlationId) {
+                EventType type
+                // String correlationId /* Replaced by OpenTelemetry traceId */
+) {
 }

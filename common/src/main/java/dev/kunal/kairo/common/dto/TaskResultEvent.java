@@ -6,7 +6,8 @@ import dev.kunal.kairo.common.enums.TaskStatus;
 
 public record TaskResultEvent(UUID taskId,
         TaskStatus status,
-        String message,
-        String correlationId) {
+        String message
+        // String correlationId /* Replaced by OpenTelemetry traceId */
+) {
 
 }

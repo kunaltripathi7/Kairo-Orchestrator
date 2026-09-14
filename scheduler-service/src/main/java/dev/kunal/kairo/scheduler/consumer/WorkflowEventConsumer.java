@@ -1,8 +1,6 @@
 package dev.kunal.kairo.scheduler.consumer;
 
-import java.util.UUID;
 
-import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
@@ -26,13 +24,18 @@ public class WorkflowEventConsumer {
     public void onWorkflowEvent(String message) {
         try {
             WorkflowEvent event = objectMapper.readValue(message, WorkflowEvent.class);
-            
-            if (event.correlationId() != null) {
-                MDC.put("correlationId", event.correlationId());
-            } else {
-                MDC.put("correlationId", UUID.randomUUID().toString());
-            }
-            
+
+            /* 
+             * LEARNING REFERENCE: Manual MDC Correlation
+             * Replaced by Micrometer Tracing auto-injecting traceId from Kafka headers.
+             *
+             * if (event.correlationId() != null) {
+             *     MDC.put("correlationId", event.correlationId());
+             * } else {
+             *     MDC.put("correlationId", UUID.randomUUID().toString());
+             * }
+             */
+
             log.info("Received workflow event: type={}, workflowId={}", event.type(), event.id());
 
             switch (event.type()) {
@@ -41,8 +44,8 @@ public class WorkflowEventConsumer {
             }
         } catch (Exception e) {
             log.error("Failed to process workflow event: {}", message, e);
-        } finally {
+        } /* finally {
             MDC.remove("correlationId");
-        }
+        } */
     }
 }

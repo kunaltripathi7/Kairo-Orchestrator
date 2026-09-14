@@ -3,7 +3,7 @@ package dev.kunal.kairo.api.config;
 import java.util.Map;
 import java.util.concurrent.Executor;
 
-import org.slf4j.MDC;
+import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -16,19 +16,7 @@ public class AsyncConfig {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(5);
         executor.setMaxPoolSize(10);
-        executor.setTaskDecorator(runnable -> {
-            Map<String, String> contextMap = MDC.getCopyOfContextMap();
-            return () -> {
-                try {
-                    if (contextMap != null) {
-                        MDC.setContextMap(contextMap);
-                    }
-                    runnable.run();
-                } finally {
-                    MDC.clear();
-                }
-            };
-        });
+        executor.setTaskDecorator(new ContextPropagatingTaskDecorator()); // injects context snapshot mdc and stuff to every async thread originated from this exectuor.
         executor.initialize();
         return executor;
     }

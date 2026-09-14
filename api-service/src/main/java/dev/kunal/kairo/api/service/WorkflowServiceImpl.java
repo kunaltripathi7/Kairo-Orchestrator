@@ -91,13 +91,14 @@ public class WorkflowServiceImpl implements WorkflowService {
                         }
                 }
 
-                String correlationId = MDC.get("correlationId");
+                // String correlationId = MDC.get("correlationId"); // Handled automatically by Micrometer Tracing
 
                 WorkflowEvent workflowEvent = new WorkflowEvent(
                                 savedWorkflow.getId(),
                                 savedWorkflow.getStatus(),
-                                EventType.WORKFLOW_CREATED,
-                                correlationId);
+                                EventType.WORKFLOW_CREATED
+                                // correlationId
+                );
 
                 OutboxEvent outboxEvent = OutboxEvent.builder()
                                 .aggregateType(AggregateType.WORKFLOW)
