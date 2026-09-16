@@ -103,6 +103,11 @@ public class TaskSchedulingService {
         taskRepository.releaseLock(taskId);
 
         UUID workflowId = completedTask.getWorkflowId();
+        
+        // Lock the workflow to serialize completion checks across nodes
+        Workflow workflow = workflowRepository.findByIdWithLock(workflowId)
+                .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + workflowId));
+
         List<Task> allTasks = taskRepository.findByWorkflowId(workflowId);
 
         // Find completed task IDs for dependency checking
@@ -135,8 +140,6 @@ public class TaskSchedulingService {
                         || t.getStatus() == TaskStatus.RETRY_PENDING);
 
         if (workflowDone) {
-            Workflow workflow = workflowRepository.findById(workflowId)
-                    .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + workflowId));
             workflow.setStatus(WorkflowStatus.COMPLETED);
             workflowRepository.save(workflow);
             log.info("All tasks completed for workflow {}", workflowId);
@@ -155,7 +158,7 @@ public class TaskSchedulingService {
 
         taskRepository.releaseLock(taskId);
 
-        Workflow workflow = workflowRepository.findById(failedTask.getWorkflowId())
+        Workflow workflow = workflowRepository.findByIdWithLock(failedTask.getWorkflowId())
                 .orElseThrow(() -> new ResourceNotFoundException("Workflow not found: " + failedTask.getWorkflowId()));
 
         if (failedTask.getAttemptCount() < workflow.getMaxRetries()) {

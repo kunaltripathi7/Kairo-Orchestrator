@@ -21,17 +21,28 @@ import dev.kunal.kairo.common.enums.KafkaTopic;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+/*
+ * LEARNING REFERENCE: Polling Outbox Pattern
+ * This class demonstrates the "Polling" approach to the Outbox Pattern.
+ * It is commented out in favor of the "Push" approach using Debezium CDC.
+ */
 @Slf4j
-@Component
-@RequiredArgsConstructor
+//@Component
+//@RequiredArgsConstructor
 public class OutboxPublisher {
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
-    private final OutboxEventRepository outboxEventRepository;
-    @Qualifier("outboxExecutor")
-    private final Executor outboxExecutorService;
+    private KafkaTemplate<String, String> kafkaTemplate;
+    private OutboxEventRepository outboxEventRepository;
+    private Executor outboxExecutorService;
 
-    @Scheduled(fixedDelay = 1000)
+    public OutboxPublisher(KafkaTemplate<String, String> kafkaTemplate, OutboxEventRepository outboxEventRepository, @Qualifier("outboxExecutor") Executor outboxExecutorService) {
+        this.kafkaTemplate = kafkaTemplate;
+        this.outboxEventRepository = outboxEventRepository;
+        this.outboxExecutorService = outboxExecutorService;
+    }
+
+
+    //@Scheduled(fixedDelay = 1000)
     public void pollOutbox() {
         List<OutboxEvent> outboxEvents = outboxEventRepository.findTop100ByOrderByCreatedAtAsc();
 
