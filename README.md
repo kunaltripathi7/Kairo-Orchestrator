@@ -1,83 +1,58 @@
-# Kairo Orchestrator 🚀
+# Kairo Orchestrator
 
-![Architecture](https://img.shields.io/badge/Architecture-Microservices-blue)
-![Language](https://img.shields.io/badge/Language-Java%20%7C%20Go-orange)
-![Pattern](https://img.shields.io/badge/Pattern-CDC%20Outbox-green)
+Most orchestrators fail at scale because they rely on database polling or suffer from dual-write inconsistencies. Kairo is a lightweight, distributed DAG execution engine built to specifically solve these failure modes. 
 
-Kairo is an enterprise-grade, distributed Directed Acyclic Graph (DAG) workflow orchestrator. It allows you to define complex, multi-step workflows as JSON and executes them reliably across distributed worker nodes. 
+It achieves **Exactly-Once Execution** and **Zero-Data-Loss** by completely offloading state propagation to the infrastructure layer using the Transactional Outbox pattern, Change Data Capture (CDC), and Distributed Locking.
 
-Inspired by systems like Temporal and Netflix Conductor, Kairo solves the hardest problems in distributed systems: **Guaranteed At-Least-Once execution, Idempotency, and Zero-Data-Loss Event Streaming.**
+## The Architecture
 
-## 🌟 Key Features & Architectural Patterns
+```mermaid
+flowchart TD
+    Client([API Request]) --> API[API Service (Java)]
+    API -- "1. ACID Tx (DAG + Event)" --> DB[(PostgreSQL)]
+    DB -. "2. WAL Tailing" .-> CDC[Debezium Kafka Connect]
+    CDC -- "3. Stream Event" --> Topic1([workflow-events])
+    
+    Topic1 -- "4. Consume" --> Worker[Go Worker Fleet]
+    Worker -- "5. Idempotency Lock" --> Redis[(Redis)]
+    Worker -- "6. Publish Result" --> Topic2([task-results])
+    
+    Topic2 -- "7. Consume" --> Sched[Scheduler Service (Java)]
+    Sched -- "8. Pessimistic Lock & Update" --> DB
+```
 
-### 1. Transactional Outbox Pattern via Debezium CDC
-Traditional orchestrators often suffer from the "Dual-Write Problem" (saving state to the database and publishing to Kafka separately, risking inconsistency if one fails). 
-- Kairo solves this by saving workflow state and an Outbox Event to PostgreSQL in a **single ACID transaction**.
-- A **Debezium Kafka Connect** cluster continuously tails the PostgreSQL Write-Ahead Log (WAL) (`wal_level=logical`) and streams these events into Kafka in real-time with sub-millisecond latency. 
+## How It Solves the Hard Problems
 
-### 2. Polyglot Microservices
-- **API Service (Java/Spring Boot):** Handles REST requests, validates DAG payloads, and initiates workflows.
-- **Scheduler Service (Java/Spring Boot):** Consumes task results, uses a Breadth-First Search (BFS) algorithm to unlock downstream dependent tasks, and handles DAG state transitions.
-- **Worker Fleet (Go):** High-concurrency worker nodes that consume Kafka events, execute the business logic via a Handler Registry pattern, and publish results.
+### 1. The Dual-Write Problem
+If a system writes state to a database and then publishes to Kafka, a crash between those two steps results in a permanently lost event. 
+Kairo avoids this entirely. It writes the workflow state and an Outbox event to Postgres in a single ACID transaction. Debezium tails the Postgres Write-Ahead Log (WAL) and streams to Kafka. **If it commits to the database, it is mathematically guaranteed to hit Kafka.**
 
-### 3. Distributed Locking & Idempotency (Redis)
-Kafka guarantees at-least-once delivery, which can result in duplicate task executions during network partitions or worker crashes. 
-- Kairo's Go workers implement a **Redis Distributed Lock (SETNX)**. 
-- When a worker pulls a task, it atomically acquires a lock with a TTL. If a worker crashes mid-execution, the lock expires. If it succeeds, the result is cached, ensuring a task is *never* processed twice, achieving true exactly-once semantics.
+### 2. The Duplicate Execution Problem
+Kafka guarantees at-least-once delivery. If a worker crashes mid-execution or a network partition occurs, Kafka will redeliver the event, potentially causing a duplicate action (e.g. charging a user twice).
+Kairo's Go workers intercept this using a **Redis Distributed Lock (SETNX)** with a TTL. If a duplicate message arrives, the worker checks the lock state, recognizes the cache hit, and safely skips execution.
 
-### 4. Concurrency Safety (Pessimistic Locking)
-When parallel tasks complete at the exact same millisecond, race conditions can corrupt the DAG state. Kairo's Java Scheduler utilizes PostgreSQL **Pessimistic Write Locks** (`SELECT ... FOR UPDATE`) to serialize state transitions, guaranteeing data integrity.
+### 3. The Parallel Completion Race Condition
+If two parallel DAG tasks finish at the exact same millisecond, two workers will try to evaluate if the workflow is complete simultaneously, potentially overwriting each other and leaving the workflow stuck.
+Kairo's Java Scheduler uses **PostgreSQL Pessimistic Write Locks** (`SELECT ... FOR UPDATE`) to serialize state transitions, guaranteeing the BFS DAG traversal never corrupts.
 
-### 5. Full Observability (OpenTelemetry)
-- **Tracing:** Spring Boot Micrometer + Zipkin exporter propagates trace contexts across asynchronous boundaries (e.g., `CompletableFuture` thread pools) to **Grafana Tempo**.
-- **Metrics:** **Prometheus** scrapes application and infrastructure metrics.
-- **Dashboards:** **Grafana** visualizes the health of the entire orchestrator.
+### 4. Distributed Tracing Loss
+When execution jumps between threads, OpenTelemetry contexts are often lost. Kairo implements custom Micrometer TaskDecorators to propagate trace IDs across asynchronous boundaries, ensuring end-to-end trace visibility in Grafana Tempo.
 
-## 🏗️ Architecture Diagram
-*(Imagine a diagram here showing API -> Postgres -> Debezium -> Kafka -> Go Worker -> Kafka -> Scheduler -> Postgres)*
+## Running Locally
 
-## 🚀 Getting Started
+Kairo requires Java 21, Go 1.24, and Docker.
 
-### Prerequisites
-- Docker & Docker Compose
-- Java 21
-- Go 1.24
-
-### Spin up the Infrastructure
-Bring up PostgreSQL, Kafka, Kafka Connect, Redis, and the Observability Stack (Prometheus, Grafana, Tempo):
 ```bash
+# 1. Spin up Postgres, Kafka, Redis, and Observability
 docker-compose up -d
-```
 
-### Register the Debezium Connector
-Once Kafka Connect is running, register the Outbox Event Router:
-```bash
+# 2. Register the Debezium Outbox Router
 ./scripts/register-debezium.sh
-```
 
-### Run the Services
-**1. Start the API Service:**
-```bash
+# 3. Start the Orchestrator
 ./gradlew :api-service:bootRun
-```
-**2. Start the Scheduler Service:**
-```bash
 ./gradlew :scheduler-service:bootRun
-```
-**3. Start the Go Worker:**
-```bash
-cd worker-service && go run main.go
-```
 
-## 💡 Example Workflow Definition
-Submit a DAG to `POST /api/v1/workflows`:
-```json
-{
-  "name": "E-Commerce Checkout",
-  "tasks": [
-    { "name": "ValidateOrder", "handler": "validate-order", "dependsOn": [] },
-    { "name": "ChargePayment", "handler": "charge-payment", "dependsOn": ["ValidateOrder"] },
-    { "name": "SendReceipt", "handler": "send-notification", "dependsOn": ["ChargePayment"] }
-  ]
-}
+# 4. Start the Worker Fleet
+cd worker-service && go run main.go
 ```
