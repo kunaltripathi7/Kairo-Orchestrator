@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/kunal/kairo-worker/handler"
+	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -28,13 +28,34 @@ type dedupEntry struct {
 	timestamp time.Time
 }
 
+type IdempotencyRecord struct {
+	Status string             `json:"status"` // "RUNNING" or "COMPLETED"
+	Result handler.TaskResult `json:"result"`
+}
+
+/*
+// LEARNING REFERENCE: In-Memory Deduplication (Prototype)
+// This is a "poor man's idempotency" using a local concurrent map.
+// It is commented out because it fails when scaled to multiple worker nodes
+// and forgets everything if the server crashes. We now use Redis Distributed Locking.
 var processedTasks sync.Map // concurrent map in go
+*/
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)) // setting it to output json
 	slog.SetDefault(logger)
 
 	slog.Info("Starting Kairo Worker Service (Go)...")
+
+	// Initialize Redis Client for Distributed Locking
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6380",
+	})
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		slog.Error("Failed to connect to Redis", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Connected to Redis successfully.")
 
 	registry := handler.NewRegistry()
 
@@ -65,8 +86,11 @@ func main() {
 		cancel()
 	}()
 
+	/*
+	// LEARNING REFERENCE: Periodic Cleanup for In-Memory Dedup
 	// Periodically clean up old dedup entries
 	go cleanupDedupEntries(ctx)
+	*/
 
 	slog.Info(fmt.Sprintf("Listening on topic: %s (group: %s)", taskQueueTopic, consumerGroup))
 
@@ -91,15 +115,44 @@ func main() {
 
 		var result handler.TaskResult
 
-		if entry, exists := processedTasks.Load(task.TaskID); exists {
-			logger.Warn("Task already processed, skipping duplicate execution")
-			result = entry.(dedupEntry).result
+		idempotencyKey := fmt.Sprintf("task:%s:idempotency", task.TaskID)
+		runningRecord, _ := json.Marshal(IdempotencyRecord{Status: "RUNNING"})
+
+		// Attempt to acquire distributed lock
+		acquired, err := rdb.SetNX(ctx, idempotencyKey, runningRecord, 5*time.Minute).Result()
+		if err != nil {
+			logger.Error("Failed to communicate with Redis", "error", err)
+			continue
+		}
+
+		if !acquired {
+			// Key already exists, check status
+			val, err := rdb.Get(ctx, idempotencyKey).Result()
+			if err != nil {
+				logger.Error("Failed to fetch idempotency record", "error", err)
+				continue
+			}
+
+			var record IdempotencyRecord
+			json.Unmarshal([]byte(val), &record)
+
+			if record.Status == "COMPLETED" {
+				logger.Info("Task already COMPLETED (cache hit), publishing cached result.")
+				result = record.Result
+			} else {
+				logger.Warn("Task is currently RUNNING on another worker (or crashed recently). Skipping.")
+				continue
+			}
 		} else {
+			// We acquired the lock, execute the task
 			result = processTask(registry, task)
-			processedTasks.Store(task.TaskID, dedupEntry{
-				result:    result,
-				timestamp: time.Now(),
+			
+			// Cache the result in Redis with 24 hour TTL
+			completedRecord, _ := json.Marshal(IdempotencyRecord{
+				Status: "COMPLETED",
+				Result: result,
 			})
+			rdb.Set(ctx, idempotencyKey, completedRecord, 24*time.Hour)
 		}
 
 		resultBytes, err := json.Marshal(result)
@@ -123,6 +176,8 @@ func main() {
 	slog.Info("Worker stopped.")
 }
 
+/*
+// LEARNING REFERENCE: In-Memory Cleanup
 func cleanupDedupEntries(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -143,6 +198,7 @@ func cleanupDedupEntries(ctx context.Context) {
 		}
 	}
 }
+*/
 
 func processTask(registry *handler.Registry, task handler.TaskPayload) handler.TaskResult {
 	h, err := registry.Get(task.HandlerName)
