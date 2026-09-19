@@ -227,10 +227,14 @@ public class TaskSchedulingService {
                 now.plus(LEASE_DURATION),
                 now);
 
+        log.info("claimTask for task {} returned {}", task.getId(), claimed);
+
         if (claimed == 0) {
             log.warn("Task {} already claimed by another node, skipping", task.getId());
             return;
         }
+
+        task.setStatus(TaskStatus.SCHEDULED); // Sync in-memory state with DB to prevent overwrite during flush
 
         publishTaskToQueue(task);
     }
@@ -253,20 +257,25 @@ public class TaskSchedulingService {
     }
 
     public void publishTaskToQueue(Task task) {
-        try {
-            String key = task.getWorkflowId().toString();
-            String value = objectMapper.writeValueAsString(new TaskMessage(
-                    task.getId(),
-                    task.getWorkflowId(),
-                    task.getHandlerName(),
-                    task.getPayload() != null ? task.getPayload().toString() : null
-                    // MDC.get("correlationId") // Handled automatically by Micrometer Tracing
-            ));
-            kafkaTemplate.send(KafkaTopic.TASK_QUEUE.getTopicName(), key, value);
-            log.info("Published task {} to task-queue", task.getId());
-        } catch (Exception e) {
-            log.error("Failed to publish task {} to Kafka", task.getId(), e);
-            throw new RuntimeException("Failed to publish task to queue", e);
-        }
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+            new org.springframework.transaction.support.TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        String key = task.getWorkflowId().toString();
+                        String value = objectMapper.writeValueAsString(new dev.kunal.kairo.common.dto.TaskMessage(
+                                task.getId(),
+                                task.getWorkflowId(),
+                                task.getHandlerName(),
+                                task.getPayload() != null ? task.getPayload().toString() : null
+                        ));
+                        kafkaTemplate.send(dev.kunal.kairo.common.enums.KafkaTopic.TASK_QUEUE.getTopicName(), key, value);
+                        log.info("Published task {} to task-queue", task.getId());
+                    } catch (Exception e) {
+                        log.error("Failed to publish task {} to Kafka", task.getId(), e);
+                    }
+                }
+            }
+        );
     }
 }

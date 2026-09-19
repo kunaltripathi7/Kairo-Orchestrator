@@ -102,6 +102,8 @@ public class RetryScheduler {
             return false;
         }
 
+        task.setStatus(TaskStatus.SCHEDULED); // Sync in-memory state with DB to prevent overwrite during flush
+
         taskSchedulingService.publishTaskToQueue(task);
         log.info("Successfully claimed and re-enqueued task {} for retry (node={})", taskId, nodeId);
         return true;

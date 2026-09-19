@@ -22,9 +22,11 @@ localhost:8083/connectors/ -d '{
     "transforms.outbox.table.field.event.id": "id",
     "transforms.outbox.table.field.event.key": "aggregate_id",
     "transforms.outbox.table.field.event.type": "type",
+    "transforms.outbox.route.by.field": "aggregate_type",
     "transforms.outbox.table.field.event.payload": "payload",
     "transforms.outbox.table.expand.json.payload": "true",
     "key.converter": "org.apache.kafka.connect.storage.StringConverter",
-    "value.converter": "org.apache.kafka.connect.storage.StringConverter"
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
   }
 }'

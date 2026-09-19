@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	brokerAddress   = "localhost:9092"
+	brokerAddress   = "localhost:9094"
 	taskQueueTopic  = "task-queue"
 	taskResultTopic = "task-results"
 	consumerGroup   = "worker-group"
@@ -65,6 +65,7 @@ func main() {
 		GroupID:  consumerGroup,
 		MinBytes: 1,
 		MaxBytes: 10e6,
+		StartOffset: kafka.FirstOffset,
 	})
 
 	writer := &kafka.Writer{
