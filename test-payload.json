@@ -1,1 +1,25 @@
-{"name": "test-workflow", "tasks": [{"handler": "validate-order", "payload": {"orderId": "123"}}]}
+{
+  "name": "E-Commerce Checkout",
+  "maxRetries": 3,
+  "taskTimeoutSeconds": 30,
+  "tasks": [
+    {
+      "name": "ValidateOrder",
+      "handler": "validate-order",
+      "dependsOn": [],
+      "payload": { "orderId": "ORD-2024-001", "items": 3 }
+    },
+    {
+      "name": "ChargePayment",
+      "handler": "charge-payment",
+      "dependsOn": ["ValidateOrder"],
+      "payload": { "amount": 99.99, "currency": "USD" }
+    },
+    {
+      "name": "SendReceipt",
+      "handler": "send-notification",
+      "dependsOn": ["ChargePayment"],
+      "payload": { "email": "customer@example.com" }
+    }
+  ]
+}
