@@ -1,4 +1,4 @@
-# Kairo Orchestrator
+# Kairo - Distributed Workflow Orchestrator
 
 When microservices crash, data gets lost. Kairo is an orchestrator built to ensure that if a task is scheduled, it executes exactly once, even if the entire cluster loses power.
 
