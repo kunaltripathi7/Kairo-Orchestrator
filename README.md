@@ -8,6 +8,29 @@ It skips the typical database-polling loops. Instead, it relies on PostgreSQL Wr
 
 ![Architecture](./docs/architecture.png)
 
+### Conceptual Model
+
+```mermaid
+block-beta
+  columns 1
+
+  block:server["Kairo Server"]
+    columns 1
+    S["Tracks state, event history, timers, queues"]
+  end
+
+  space
+
+  block:worker["Kairo Worker (Hosted and run by dev team)"]
+    columns 2
+    W["Workflows (Orchestration Logic)"]
+    A["Activities (Actual business tasks)"]
+  end
+
+  server -- "Dispatches task" --> worker
+  worker -- "Reports results" --> server
+```
+
 ## System Mechanics
 
 ### 1. Zero Data Loss (The Outbox Pattern + CDC)
