@@ -22,6 +22,9 @@ public interface TaskRepository extends JpaRepository<Task, UUID> {
 
     List<Task> findByStatusAndNextRetryTimeLessThanEqual(TaskStatus status, Instant time);
 
+    @Query("SELECT t FROM Task t WHERE t.status = :status AND (t.lockedUntil < :time OR (t.lockedUntil IS NULL AND t.updatedAt < :time))")
+    List<Task> findStaleTasks(@Param("status") TaskStatus status, @Param("time") Instant time);
+
     /**
      * Atomically claims a task by setting its status, lockedBy, and lockedUntil fields.
      * Only succeeds if the task is currently in the expected status AND is not locked

@@ -1,4 +1,7 @@
 spring:
+  threads:
+    virtual:
+      enabled: true
   application:
     name: kairo-api-service
 
@@ -7,15 +10,18 @@ spring:
     username: kairo
     password: kairo
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
 
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
+        format_sql: false
 
   kafka:
     bootstrap-servers: localhost:9094
@@ -25,6 +31,7 @@ spring:
 
 server:
   port: 8080
+
 
 management:
   tracing:

@@ -41,8 +41,8 @@ public class TaskResultConsumer {
             log.info("Received task result: taskId={}, status={}", event.taskId(), event.status());
 
             switch (event.status()) {
-                case COMPLETED -> taskSchedulingService.onTaskCompleted(event.taskId());
-                case FAILED -> taskSchedulingService.onTaskFailed(event.taskId());
+                case COMPLETED -> taskSchedulingService.onTaskCompleted(event.taskId(), event.message());
+                case FAILED -> taskSchedulingService.onTaskFailed(event.taskId(), event.message());
                 default -> log.warn("Unexpected task result status: {}", event.status());
             }
         } catch (Exception e) {

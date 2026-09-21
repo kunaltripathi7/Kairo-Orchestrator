@@ -8,10 +8,13 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.slf4j.MDC;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.kunal.kairo.api.dto.request.WorkflowRequest;
+import dev.kunal.kairo.api.dto.response.WorkflowListResponse;
 import dev.kunal.kairo.api.dto.response.WorkflowResponse;
 import dev.kunal.kairo.api.mapper.WorkflowMapper;
 import dev.kunal.kairo.api.repository.OutboxEventRepository;
@@ -121,5 +124,17 @@ public class WorkflowServiceImpl implements WorkflowService {
                 List<Task> tasks = taskRepository.findByWorkflowIdOrderBySequenceNumber(id);
                 WorkflowResponse response = workflowMapper.toResponse(workflow, tasks);
                 return response;
+        }
+
+        @Override
+        public Page<WorkflowListResponse> getWorkflows(Pageable pageable) {
+                return workflowRepository.findAll(pageable)
+                                .map(workflow -> new WorkflowListResponse(
+                                                workflow.getId(),
+                                                workflow.getName(),
+                                                workflow.getStatus(),
+                                                workflow.getCreatedAt(),
+                                                workflow.getUpdatedAt()
+                                ));
         }
 }

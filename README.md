@@ -69,6 +69,9 @@ docker-compose up -d
 ./gradlew :api-service:bootRun
 ./gradlew :scheduler-service:bootRun
 cd worker-service && go run main.go
+
+# Start the interactive UI
+cd kairo-ui && npm install && npm run dev
 ```
 
 ## Example
@@ -105,6 +108,7 @@ curl http://localhost:8080/api/v1/workflows/{id}
 |---|---|
 | API & Scheduler | Java 21, Spring Boot 3 |
 | Worker Fleet | Go 1.24 |
+| Interactive UI | React, TypeScript, Vite, React Flow |
 | Message Broker | Apache Kafka |
 | CDC | Debezium (Kafka Connect) |
 | Database | PostgreSQL 15 (WAL logical replication) |

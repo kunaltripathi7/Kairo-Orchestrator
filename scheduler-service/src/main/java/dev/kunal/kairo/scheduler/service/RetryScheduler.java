@@ -50,7 +50,7 @@ public class RetryScheduler {
         for (String taskIdStr : taskIds) {
             try {
                 UUID taskId = UUID.fromString(taskIdStr);
-                boolean claimed = claimAndRetryTask(taskId);
+                boolean claimed = taskSchedulingService.claimAndRetryTask(taskId);
                 if (claimed) {
                     redisTemplate.opsForZSet().remove(RETRY_QUEUE_KEY, taskIdStr);
                 }
@@ -67,46 +67,43 @@ public class RetryScheduler {
                 
         for (Task task : pendingRetries) {
             try {
-                claimAndRetryTask(task.getId());
+                taskSchedulingService.claimAndRetryTask(task.getId());
             } catch (Exception e) {
                 log.error("Failed to process retry fallback for task {}", task.getId(), e);
             }
         }
     }
 
-    /**
-     * Atomically claims a RETRY_PENDING task and publishes it to the task queue.
-     * Returns true if this node successfully claimed the task, false if another node got it first.
-     */
     @Transactional
-    public boolean claimAndRetryTask(UUID taskId) {
-        Instant now = Instant.now();
-        Instant leaseUntil = now.plus(LEASE_DURATION);
-
-        int claimed = taskRepository.claimTask(
-                taskId,
-                TaskStatus.RETRY_PENDING,
-                TaskStatus.SCHEDULED,
-                nodeId,
-                leaseUntil,
-                now);
-
-        if (claimed == 0) {
-            log.debug("Task {} already claimed by another node, skipping", taskId);
-            return false;
+    @Scheduled(fixedDelay = 15000)
+    public void pollPostgresForStaleScheduledTasks() {
+        // Find tasks that were marked SCHEDULED but never completed (stale for 15s)
+        List<Task> staleTasks = taskRepository.findStaleTasks(
+                TaskStatus.SCHEDULED, Instant.now().minusSeconds(15));
+                
+        for (Task task : staleTasks) {
+            try {
+                // Task is already SCHEDULED, but lock expired. Re-claim it.
+                Instant now = Instant.now();
+                Instant leaseUntil = now.plus(LEASE_DURATION);
+                
+                int claimed = taskRepository.claimTask(
+                        task.getId(),
+                        TaskStatus.SCHEDULED,
+                        TaskStatus.SCHEDULED,
+                        nodeId,
+                        leaseUntil,
+                        now);
+                        
+                if (claimed > 0) {
+                    log.info("Recovered stale SCHEDULED task {}, re-publishing to queue", task.getId());
+                    taskSchedulingService.publishTaskToQueue(task);
+                }
+            } catch (Exception e) {
+                log.error("Failed to process stale task {}", task.getId(), e);
+            }
         }
-
-        Task task = taskRepository.findById(taskId).orElse(null);
-        if (task == null) {
-            log.warn("Task {} disappeared after claiming, skipping", taskId);
-            return false;
-        }
-
-        task.setStatus(TaskStatus.SCHEDULED); // Sync in-memory state with DB to prevent overwrite during flush
-
-        taskSchedulingService.publishTaskToQueue(task);
-        log.info("Successfully claimed and re-enqueued task {} for retry (node={})", taskId, nodeId);
-        return true;
     }
+
 }
 

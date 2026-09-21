@@ -45,3 +45,6 @@ bin/
 
 ### Go ###
 worker-service/kairo-worker
+loadtest/kairo-loadtest*.log
+*.pid
+*.hprof

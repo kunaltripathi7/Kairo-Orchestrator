@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,32 +21,20 @@ const (
 	taskQueueTopic  = "task-queue"
 	taskResultTopic = "task-results"
 	consumerGroup   = "worker-group"
-	dedupTTL        = 5 * time.Minute
+	workerPoolSize  = 50
+	taskChannelSize = 100
 )
-
-type dedupEntry struct {
-	result    handler.TaskResult
-	timestamp time.Time
-}
 
 type IdempotencyRecord struct {
 	Status string             `json:"status"` // "RUNNING" or "COMPLETED"
 	Result handler.TaskResult `json:"result"`
 }
 
-/*
-// LEARNING REFERENCE: In-Memory Deduplication (Prototype)
-// This is a "poor man's idempotency" using a local concurrent map.
-// It is commented out because it fails when scaled to multiple worker nodes
-// and forgets everything if the server crashes. We now use Redis Distributed Locking.
-var processedTasks sync.Map // concurrent map in go
-*/
-
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)) // setting it to output json
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	slog.Info("Starting Kairo Worker Service (Go)...")
+	slog.Info("Starting Kairo Worker Service (Go)...", "poolSize", workerPoolSize)
 
 	// Initialize Redis Client for Distributed Locking
 	rdb := redis.NewClient(&redis.Options{
@@ -60,11 +49,11 @@ func main() {
 	registry := handler.NewRegistry()
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  []string{brokerAddress},
-		Topic:    taskQueueTopic,
-		GroupID:  consumerGroup,
-		MinBytes: 1,
-		MaxBytes: 10e6,
+		Brokers:     []string{brokerAddress},
+		Topic:       taskQueueTopic,
+		GroupID:     consumerGroup,
+		MinBytes:    1,
+		MaxBytes:    10e6,
 		StartOffset: kafka.FirstOffset,
 	})
 
@@ -87,14 +76,24 @@ func main() {
 		cancel()
 	}()
 
-	/*
-	// LEARNING REFERENCE: Periodic Cleanup for In-Memory Dedup
-	// Periodically clean up old dedup entries
-	go cleanupDedupEntries(ctx)
-	*/
+	// Buffered channel for task dispatch
+	taskCh := make(chan handler.TaskPayload, taskChannelSize)
 
-	slog.Info(fmt.Sprintf("Listening on topic: %s (group: %s)", taskQueueTopic, consumerGroup))
+	// Launch worker pool goroutines
+	var wg sync.WaitGroup
+	for i := 0; i < workerPoolSize; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for task := range taskCh {
+				executeTask(ctx, registry, rdb, writer, task, workerID)
+			}
+		}(i)
+	}
 
+	slog.Info(fmt.Sprintf("Listening on topic: %s (group: %s) with %d workers", taskQueueTopic, consumerGroup, workerPoolSize))
+
+	// Consumer loop: read from Kafka and dispatch to worker pool
 	for {
 		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
@@ -111,95 +110,85 @@ func main() {
 			continue
 		}
 
-		logger := slog.With("correlationId", task.CorrelationID, "taskId", task.TaskID, "workflowId", task.WorkflowID)
-		logger.Info("Received task", "handler", task.HandlerName)
-
-		var result handler.TaskResult
-
-		idempotencyKey := fmt.Sprintf("task:%s:idempotency", task.TaskID)
-		runningRecord, _ := json.Marshal(IdempotencyRecord{Status: "RUNNING"})
-
-		// Attempt to acquire distributed lock
-		acquired, err := rdb.SetNX(ctx, idempotencyKey, runningRecord, 5*time.Minute).Result()
-		if err != nil {
-			logger.Error("Failed to communicate with Redis", "error", err)
-			continue
-		}
-
-		if !acquired {
-			// Key already exists, check status
-			val, err := rdb.Get(ctx, idempotencyKey).Result()
-			if err != nil {
-				logger.Error("Failed to fetch idempotency record", "error", err)
-				continue
-			}
-
-			var record IdempotencyRecord
-			json.Unmarshal([]byte(val), &record)
-
-			if record.Status == "COMPLETED" {
-				logger.Info("Task already COMPLETED (cache hit), publishing cached result.")
-				result = record.Result
-			} else {
-				logger.Warn("Task is currently RUNNING on another worker (or crashed recently). Skipping.")
-				continue
-			}
-		} else {
-			// We acquired the lock, execute the task
-			result = processTask(registry, task)
-			
-			// Cache the result in Redis with 24 hour TTL
-			completedRecord, _ := json.Marshal(IdempotencyRecord{
-				Status: "COMPLETED",
-				Result: result,
-			})
-			rdb.Set(ctx, idempotencyKey, completedRecord, 24*time.Hour)
-		}
-
-		resultBytes, err := json.Marshal(result)
-		if err != nil {
-			logger.Error("Failed to marshal result", "error", err)
-			continue
-		}
-		err = writer.WriteMessages(ctx, kafka.Message{
-			Key:   []byte(task.WorkflowID),
-			Value: resultBytes,
-		})
-		if err != nil {
-			logger.Error("Failed to publish result", "error", err)
-		} else {
-			logger.Info("Published result", "status", result.Status)
+		// Dispatch to worker pool (blocks if channel is full, providing backpressure)
+		select {
+		case taskCh <- task:
+		case <-ctx.Done():
+			break
 		}
 	}
 
+	// Shutdown: close channel and wait for in-flight tasks
+	close(taskCh)
+	wg.Wait()
 	reader.Close()
 	writer.Close()
 	slog.Info("Worker stopped.")
 }
 
-/*
-// LEARNING REFERENCE: In-Memory Cleanup
-func cleanupDedupEntries(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
+// executeTask handles a single task within a goroutine worker.
+// It acquires a Redis distributed lock, executes the handler, and publishes the result.
+func executeTask(ctx context.Context, registry *handler.Registry, rdb *redis.Client, writer *kafka.Writer, task handler.TaskPayload, workerID int) {
+	logger := slog.With("correlationId", task.CorrelationID, "taskId", task.TaskID, "workflowId", task.WorkflowID, "worker", workerID)
+	logger.Info("Received task", "handler", task.HandlerName)
 
-	for {
-		select {
-		case <-ctx.Done():
+	var result handler.TaskResult
+
+	idempotencyKey := fmt.Sprintf("task:%s:idempotency", task.TaskID)
+	runningRecord, _ := json.Marshal(IdempotencyRecord{Status: "RUNNING"})
+
+	// Attempt to acquire distributed lock
+	acquired, err := rdb.SetNX(ctx, idempotencyKey, runningRecord, 5*time.Minute).Result()
+	if err != nil {
+		logger.Error("Failed to communicate with Redis", "error", err)
+		return
+	}
+
+	if !acquired {
+		// Key already exists, check status
+		val, err := rdb.Get(ctx, idempotencyKey).Result()
+		if err != nil {
+			logger.Error("Failed to fetch idempotency record", "error", err)
 			return
-		case <-ticker.C:
-			now := time.Now()
-			processedTasks.Range(func(key, value any) bool {
-				entry := value.(dedupEntry)
-				if now.Sub(entry.timestamp) > dedupTTL {
-					processedTasks.Delete(key)
-				}
-				return true
-			})
 		}
+
+		var record IdempotencyRecord
+		json.Unmarshal([]byte(val), &record)
+
+		if record.Status == "COMPLETED" {
+			logger.Info("Task already COMPLETED (cache hit), publishing cached result.")
+			result = record.Result
+		} else {
+			logger.Warn("Task is currently RUNNING on another worker (or crashed recently). Skipping.")
+			return
+		}
+	} else {
+		// We acquired the lock, execute the task
+		result = processTask(registry, task)
+
+		// Cache the result in Redis with 24 hour TTL
+		completedRecord, _ := json.Marshal(IdempotencyRecord{
+			Status: "COMPLETED",
+			Result: result,
+		})
+		rdb.Set(ctx, idempotencyKey, completedRecord, 24*time.Hour)
+	}
+
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		logger.Error("Failed to marshal result", "error", err)
+		return
+	}
+	err = writer.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(task.WorkflowID),
+		Value: resultBytes,
+	})
+	if err != nil {
+		logger.Error("Failed to publish result", "error", err)
+	} else {
+		logger.Info("Published result", "status", result.Status)
 	}
 }
-*/
 
 func processTask(registry *handler.Registry, task handler.TaskPayload) handler.TaskResult {
 	h, err := registry.Get(task.HandlerName)

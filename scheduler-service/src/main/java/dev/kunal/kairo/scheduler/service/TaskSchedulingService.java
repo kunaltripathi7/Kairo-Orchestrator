@@ -16,6 +16,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
 import dev.kunal.kairo.common.dto.TaskMessage;
 import dev.kunal.kairo.common.entity.Task;
 import dev.kunal.kairo.common.entity.Workflow;
@@ -90,7 +93,7 @@ public class TaskSchedulingService {
     }
 
     @Transactional
-    public void onTaskCompleted(UUID taskId) {
+    public void onTaskCompleted(UUID taskId, String message) {
         Task completedTask = taskRepository.findById(taskId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task not found: " + taskId));
 
@@ -100,6 +103,13 @@ public class TaskSchedulingService {
         }
 
         completedTask.setStatus(TaskStatus.COMPLETED);
+        if (message != null) {
+            try {
+                completedTask.setResult(objectMapper.createObjectNode().put("message", message));
+            } catch (Exception e) {
+                log.warn("Failed to parse message into result for task {}", taskId, e);
+            }
+        }
         taskRepository.releaseLock(taskId);
 
         UUID workflowId = completedTask.getWorkflowId();
@@ -147,7 +157,7 @@ public class TaskSchedulingService {
     }
 
     @Transactional
-    public void onTaskFailed(UUID taskId) {
+    public void onTaskFailed(UUID taskId, String message) {
         Task failedTask = taskRepository.findById(taskId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task not found: " + taskId));
 
@@ -164,6 +174,13 @@ public class TaskSchedulingService {
         if (failedTask.getAttemptCount() < workflow.getMaxRetries()) {
             failedTask.setAttemptCount(failedTask.getAttemptCount() + 1);
             failedTask.setStatus(TaskStatus.RETRY_PENDING);
+            if (message != null) {
+                try {
+                    failedTask.setResult(objectMapper.createObjectNode().put("error", message));
+                } catch (Exception e) {
+                    log.warn("Failed to set error result for task {}", taskId, e);
+                }
+            }
 
             long delaySeconds = (long) Math.pow(2, failedTask.getAttemptCount());
             Instant nextRetry = Instant.now().plusSeconds(delaySeconds);
@@ -179,6 +196,13 @@ public class TaskSchedulingService {
             }
         } else {
             failedTask.setStatus(TaskStatus.FAILED);
+            if (message != null) {
+                try {
+                    failedTask.setResult(objectMapper.createObjectNode().put("error", message));
+                } catch (Exception e) {
+                    log.warn("Failed to set error result for task {}", taskId, e);
+                }
+            }
             taskRepository.save(failedTask);
 
             publishTaskToDLQ(failedTask, "Max retries exhausted");
@@ -239,6 +263,41 @@ public class TaskSchedulingService {
         publishTaskToQueue(task);
     }
 
+    /**
+     * Atomically claims a RETRY_PENDING task and publishes it to the task queue.
+     * Returns true if this node successfully claimed the task, false if another node got it first.
+     */
+    @Transactional
+    public boolean claimAndRetryTask(UUID taskId) {
+        Instant now = Instant.now();
+        Instant leaseUntil = now.plus(LEASE_DURATION);
+
+        int claimed = taskRepository.claimTask(
+                taskId,
+                TaskStatus.RETRY_PENDING,
+                TaskStatus.SCHEDULED,
+                nodeId,
+                leaseUntil,
+                now);
+
+        if (claimed == 0) {
+            log.debug("Task {} already claimed by another node, skipping", taskId);
+            return false;
+        }
+
+        Task task = taskRepository.findById(taskId).orElse(null);
+        if (task == null) {
+            log.warn("Task {} disappeared after claiming, skipping", taskId);
+            return false;
+        }
+
+        task.setStatus(TaskStatus.SCHEDULED); // Sync in-memory state with DB to prevent overwrite during flush
+
+        publishTaskToQueue(task);
+        log.info("Successfully claimed and re-enqueued task {} for retry (node={})", taskId, nodeId);
+        return true;
+    }
+
     public void publishTaskToDLQ(Task task, String reason) {
         try {
             String key = task.getWorkflowId().toString();
@@ -257,19 +316,19 @@ public class TaskSchedulingService {
     }
 
     public void publishTaskToQueue(Task task) {
-        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
-            new org.springframework.transaction.support.TransactionSynchronization() {
+        TransactionSynchronizationManager.registerSynchronization( // threadLocal context has the current transaction data
+            new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
                     try {
                         String key = task.getWorkflowId().toString();
-                        String value = objectMapper.writeValueAsString(new dev.kunal.kairo.common.dto.TaskMessage(
+                        String value = objectMapper.writeValueAsString(new TaskMessage(
                                 task.getId(),
                                 task.getWorkflowId(),
                                 task.getHandlerName(),
                                 task.getPayload() != null ? task.getPayload().toString() : null
                         ));
-                        kafkaTemplate.send(dev.kunal.kairo.common.enums.KafkaTopic.TASK_QUEUE.getTopicName(), key, value);
+                        kafkaTemplate.send(KafkaTopic.TASK_QUEUE.getTopicName(), key, value);
                         log.info("Published task {} to task-queue", task.getId());
                     } catch (Exception e) {
                         log.error("Failed to publish task {} to Kafka", task.getId(), e);
